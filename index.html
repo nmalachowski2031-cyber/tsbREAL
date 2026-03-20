@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>2D TSB - RED CONTROLS ONLY</title>
+  <title>2D TSB - RED DIRECTIONAL DASH</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -12,70 +12,71 @@
     canvas { border: 2px solid #444; background: linear-gradient(to bottom, #87CEEB 70%, #90EE90 100%); }
     #instructions {
       position: absolute; top: 10px; left: 10px; font-size: 14px; background: rgba(0,0,0,0.9);
-      padding: 15px; border-radius: 8px; max-width: 300px;
+      padding: 15px; border-radius: 8px; max-width: 320px;
     }
   </style>
 </head>
 <body>
   <div id="instructions">
-    <strong>🔴 RED = YOU (Controls)</strong><br>
-    A/D: Move | Space: Jump | Q: Dash | Z: M1 | 1: Special Punch<br>
-    <strong>🔵 BLUE = DUMMY (AI/Auto)</strong><br>
-    <span style="color:#FF4444">X Block stops attacks • Hitboxes show on attacks</span>
+    <strong style="color:#FF4444">🔴 RED = YOU</strong><br>
+    A = Move Left | D = Move Right<br>
+    Space = Jump | Q = Dash (direction of LAST move)<br>
+    Z = M1 | 1 = Special Punch<br>
+    <span style="color:#FFAA00">Hitboxes visible • X blocks attacks</span>
   </div>
   <canvas id="game" width="800" height="600"></canvas>
   <script>
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
     
-    // RED PLAYER (YOU CONTROL) vs BLUE DUMMY
-    const player = {  // RED - YOU CONTROL THIS ONE
+    // Input tracking - SEPARATE for RED only
+    const playerInput = {};
+    
+    // RED PLAYER (YOU CONTROL)
+    const player = {
       x: 400, y: 430, vx: 0, vy: 0, width: 32, height: 32,
-      hp: 100, maxHp: 100, onGround: false, facing: -1,
+      hp: 100, maxHp: 100, onGround: false, facing: 1,
+      lastMoveDir: 1,  // ← NEW: Tracks last A/D direction
       m1Combo: 0, m1Cooldown: 0, specialWindup: 0
     };
     
-    const dummy = {  // BLUE - ENEMY/AI
+    // BLUE DUMMY (NEVER controlled)
+    const dummy = {
       x: 100, y: 430, vx: 0, vy: 0, width: 32, height: 32,
       hp: 100, maxHp: 100, onGround: false, facing: 1,
-      ragdoll: 0, aiCooldown: 0
+      ragdoll: 0
     };
     
     const block = { x: 380, y: 420, width: 40, height: 80, active: true };
-    
-    // Game state
     const gravity = 0.6, moveSpeed = 5, jumpPower = -14, dashPower = 16;
-    let keys = {}, cameraX = 0, gameTime = 0, hitboxes = [];
+    let cameraX = 0, gameTime = 0, hitboxes = [];
     
-    // Input - ONLY affects RED player
+    // Input - RED PLAYER ONLY
     window.addEventListener('keydown', e => {
       const key = e.key.toLowerCase();
-      keys[key] = true;
+      playerInput[key] = true;
     });
     window.addEventListener('keyup', e => {
       const key = e.key.toLowerCase();
-      keys[key] = false;
+      playerInput[key] = false;
     });
     
-    // Draw character matching your pixel art
     function drawCharacter(x, y, isPlayer, ragdoll = 0) {
       ctx.save();
       ctx.translate(x, y);
+      ctx.scale(isPlayer ? player.facing : 1, 1);
       
-      // Body color: RED player vs BLUE dummy
       const bodyColor = isPlayer ? '#DC143C' : '#4169E1';
       ctx.fillStyle = bodyColor;
       ctx.fillRect(-16, -16, 32, 32);
       ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
       ctx.strokeRect(-16, -16, 32, 32);
       
-      // Your exact face: two eyes + mouth
       ctx.fillStyle = '#000';
-      ctx.fillRect(-10, -8, 5, 5);  // Left eye
-      ctx.fillRect(3, -8, 5, 5);   // Right eye
-      ctx.fillRect(-5, 3, 10, 3);  // Mouth
+      ctx.fillRect(-10, -8, 5, 5);
+      ctx.fillRect(3, -8, 5, 5);
+      ctx.fillRect(-5, 3, 10, 3);
       
-      // Floating hands
       const handBob = Math.sin(gameTime * 0.02) * 2;
       ctx.fillStyle = isPlayer ? '#FF4500' : '#6495ED';
       ctx.fillRect(-24, -4 + handBob, 10, 10);
@@ -84,8 +85,7 @@
       ctx.restore();
     }
     
-    // HP bars
-    function drawHPBar(entity, x, y, isPlayer) {
+    function drawHPBar(entity, x, y) {
       const width = 36, height = 6;
       x -= 18; y -= 30;
       ctx.fillStyle = '#222';
@@ -98,15 +98,13 @@
       ctx.fillRect(x + 1, y + 1, width * hpPercent - 2, height - 2);
     }
     
-    // Collision
     function rectsCollide(a, b) {
       return a.x < b.x + b.width && a.x + a.width > b.x &&
              a.y < b.y + b.height && a.y + a.height > b.y;
     }
     
-    // HITBOX VISUALS - Flash red rectangles
     function drawHitboxes() {
-      hitboxes.forEach((hb, i) => {
+      hitboxes.forEach(hb => {
         ctx.strokeStyle = hb.blocked ? '#FF0000' : '#FFAA00';
         ctx.lineWidth = 3;
         ctx.strokeRect(hb.x - cameraX, hb.y, hb.width, hb.height);
@@ -116,14 +114,11 @@
       hitboxes = hitboxes.filter(hb => hb.life-- > 0);
     }
     
-    // Respawn
     function respawnDummy() {
       dummy.x = 100; dummy.y = 430; dummy.vx = 0; dummy.vy = 0;
-      dummy.hp = 100; dummy.ragdoll = 0;
-      block.active = true;
+      dummy.hp = 100; dummy.ragdoll = 0; block.active = true;
     }
     
-    // Physics update
     function updateEntity(entity, isPlayer = false) {
       if (entity.ragdoll > 0) {
         entity.ragdoll--;
@@ -131,7 +126,7 @@
         entity.vx *= 0.96;
         entity.y += entity.vy;
         entity.x += entity.vx;
-        if (entity.y > 500) {
+        if (entity.y > 500 - entity.height) {
           entity.y = 500 - entity.height;
           entity.vy *= -0.4;
           entity.ragdoll--;
@@ -151,38 +146,44 @@
       } else entity.onGround = false;
     }
     
-    // Update game
+    // MAIN UPDATE - RED ONLY
     function update() {
       gameTime++;
       
-      // RED PLAYER CONTROLS ONLY
-      if (keys['a']) { player.vx = -moveSpeed; player.facing = -1; }
-      if (keys['d']) { player.vx = moveSpeed; player.facing = 1; }
+      // A = LEFT, D = RIGHT - Updates lastMoveDir
+      if (playerInput['a']) {
+        player.vx = -moveSpeed;
+        player.facing = -1;
+        player.lastMoveDir = -1;  // ← TRACKS LAST DIRECTION
+      } else if (playerInput['d']) {
+        player.vx = moveSpeed;
+        player.facing = 1;
+        player.lastMoveDir = 1;   // ← TRACKS LAST DIRECTION
+      } else {
+        player.vx *= 0.8;
+      }
       
-      if (keys[' '] && player.onGround) {
+      // Jump
+      if (playerInput[' '] && player.onGround) {
         player.vy = jumpPower;
         player.onGround = false;
       }
       
-      // Dash - ONLY player
-      if (keys['q']) {
-        let dashDir = player.facing;
-        if (keys['a']) dashDir = -1;
-        if (keys['d']) dashDir = 1;
-        player.vx = dashDir * dashPower;
+      // DASH uses LAST MOVE DIRECTION (A then Q = left dash!)
+      if (playerInput['q']) {
+        player.vx = player.lastMoveDir * dashPower;  // ← KEY FIX
         player.vy -= 6;
-        keys['q'] = false; // Prevent spam
+        playerInput['q'] = false;  // One dash per press
       }
       
-      // M1 - ONLY player
-      if (keys['z'] && player.m1Cooldown <= 0) {
+      // M1
+      if (playerInput['z'] && player.m1Cooldown <= 0) {
         player.m1Cooldown = 51;
         const hitbox = {
           x: player.x + (player.facing * 25), y: player.y - 12,
           width: 55, height: 44, life: 15
         };
         
-        // Block check
         if (rectsCollide(hitbox, block) && block.active) {
           hitbox.blocked = true;
           block.active = false;
@@ -192,10 +193,10 @@
           dummy.vx += player.facing * 10;
           player.m1Combo = (player.m1Combo + 1) % 4;
           
-          if (player.m1Combo === 0) { // 4th M1
+          if (player.m1Combo === 0) {
             dummy.ragdoll = 90;
             dummy.vx += player.facing * 15;
-          } else if (player.m1Combo === 2 && player.vy < -3) { // Jump downslam
+          } else if (player.m1Combo === 2 && player.vy < -3) {
             dummy.ragdoll = 120;
             dummy.vy = -18;
           }
@@ -204,9 +205,9 @@
       }
       player.m1Cooldown = Math.max(0, player.m1Cooldown - 1);
       
-      // Special 1 - ONLY player
-      if (keys['1'] && player.specialWindup === 0) {
-        player.specialWindup = 24; // 0.4s windup
+      // Special 1
+      if (playerInput['1'] && player.specialWindup === 0) {
+        player.specialWindup = 24;
       }
       if (player.specialWindup > 0) {
         player.specialWindup--;
@@ -225,34 +226,19 @@
         }
       }
       
-      // Update physics
       updateEntity(player, true);
       updateEntity(dummy, false);
       
-      // Boundaries
       player.x = Math.max(20, Math.min(750, player.x));
       dummy.x = Math.max(20, Math.min(350, dummy.x));
       
-      // Dummy AI (simple)
-      if (dummy.ragdoll === 0 && dummy.aiCooldown <= 0) {
-        if (Math.abs(dummy.x - player.x) < 80) {
-          dummy.vx += (player.x > dummy.x ? 2 : -2);
-        }
-        dummy.aiCooldown = 60;
-      }
-      dummy.aiCooldown = Math.max(0, dummy.aiCooldown - 1);
-      
-      // Respawn
       if (dummy.hp <= 0) respawnDummy();
-      
       cameraX = player.x - canvas.width / 2;
     }
     
-    // Render
     function render() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
-      // Ground
       ctx.fillStyle = '#8B4513';
       ctx.fillRect(-100, 500, 1000, 100);
       
@@ -267,17 +253,14 @@
       ctx.fillText('X', 0, 0);
       ctx.restore();
       
-      // Characters + HP
       drawCharacter(player.x - cameraX, player.y, true);
-      drawHPBar(player, player.x - cameraX, player.y, true);
+      drawHPBar(player, player.x - cameraX, player.y);
       
       drawCharacter(dummy.x - cameraX, dummy.y, false);
-      drawHPBar(dummy, dummy.x - cameraX, dummy.y, false);
+      drawHPBar(dummy, dummy.x - cameraX, dummy.y);
       
-      // HITBOXES VISIBLE
       drawHitboxes();
       
-      // UI
       if (player.m1Cooldown > 0) {
         ctx.fillStyle = 'rgba(255,255,255,0.9)';
         ctx.fillRect(canvas.width/2 - 40, 40, 80, 30);
@@ -288,7 +271,6 @@
       }
     }
     
-    // Game loop
     function gameLoop() {
       update();
       render();
