@@ -2,248 +2,322 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>2D TSB Prototype - Full Combat</title>
+  <title>2D TSB - FIXED</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       background: #222; color: #fff; font-family: Arial, sans-serif;
       display: flex; justify-content: center; align-items: center; min-height: 100vh;
-      overflow: hidden;
     }
-    canvas { border: 2px solid #444; background: linear-gradient(to bottom, #87CEEB 0%, #98D8E8 70%, #90EE90 100%); }
+    canvas { border: 2px solid #444; background: linear-gradient(to bottom, #87CEEB 70%, #90EE90 100%); }
     #instructions {
-      position: absolute; top: 10px; left: 10px; font-size: 12px; background: rgba(0,0,0,0.8);
-      padding: 10px; border-radius: 5px; max-width: 300px;
+      position: absolute; top: 10px; left: 10px; font-size: 14px; background: rgba(0,0,0,0.8);
+      padding: 15px; border-radius: 8px; max-width: 280px;
     }
   </style>
 </head>
 <body>
   <div id="instructions">
-    A/D: Move | Space: Jump | Q: Dash (A/D+Q=Side) | Z: M1 | 1: Punch Special<br>
-    Dummy spawns middle • X Block stops attacks • HP above heads
+    <strong>BLUE = YOU (Left side)</strong><br>
+    A/D: Move | Space: Jump | Q: Dash | Z: M1 | 1: Special Punch<br>
+    <strong>RED = DUMMY (Right side, 100HP)</strong><br>
+    X Block stops attacks
   </div>
   <canvas id="game" width="800" height="600"></canvas>
   <script>
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
     
-    // Game state
-    let player = { x: 100, y: 400, vx: 0, vy: 0, width: 40, height: 40, hp: 100, maxHp: 100, onGround: false, facing: 1, m1Combo: 0, m1Cooldown: 0 };
-    let dummy = { x: 350, y: 400, vx: 0, vy: 0, width: 40, height: 40, hp: 100, maxHp: 100, onGround: false, facing: -1, ragdoll: 0, ragdollTime: 0 };
-    let block = { x: 380, y: 420, width: 40, height: 80, active: true };
+    // Game objects - FIXED player vs dummy
+    const player = {
+      x: 100, y: 430, vx: 0, vy: 0, width: 32, height: 32,
+      hp: 100, maxHp: 100, onGround: false, facing: 1,
+      m1Combo: 0, m1Cooldown: 0, specialWindup: 0
+    };
     
-    const gravity = 0.5, moveSpeed = 4, jumpPower = -12, dashPower = 15, friction = 0.8;
-    let keys = {}, cameraX = 0, time = 0;
+    const dummy = {
+      x: 400, y: 430, vx: 0, vy: 0, width: 32, height: 32,
+      hp: 100, maxHp: 100, onGround: false, facing: -1,
+      ragdoll: 0, ragdollTime: 0
+    };
     
-    // Input
-    window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
-    window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+    const block = { x: 380, y: 420, width: 40, height: 80, active: true };
     
-    // Draw HP bar
-    function drawHPBar(entity, x, y) {
-      const barWidth = 40, barHeight = 6;
-      ctx.fillStyle = '#333';
-      ctx.fillRect(x - barWidth/2, y - 25, barWidth, barHeight);
-      ctx.fillStyle = entity.hp > 50 ? '#4CAF50' : entity.hp > 25 ? '#FF9800' : '#F44336';
-      ctx.fillRect(x - barWidth/2, y - 25, barWidth * (entity.hp / entity.maxHp), barHeight);
-      ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
-      ctx.strokeRect(x - barWidth/2, y - 25, barWidth, barHeight);
-    }
+    // Constants
+    const gravity = 0.6, moveSpeed = 5, jumpPower = -14, dashPower = 16;
+    let keys = {}, cameraX = 0, gameTime = 0;
     
-    // Draw character (blue player, red dummy)
-    function drawCharacter(entity, isPlayer = false) {
+    // Input tracking
+    const inputState = {};
+    window.addEventListener('keydown', e => {
+      const key = e.key.toLowerCase();
+      keys[key] = true;
+      inputState[key] = true;
+    });
+    window.addEventListener('keyup', e => {
+      const key = e.key.toLowerCase();
+      keys[key] = false;
+      inputState[key] = false;
+    });
+    
+    // Draw EXACT pixel character from your image
+    function drawCharacter(x, y, isPlayer, ragdoll = 0) {
       ctx.save();
-      ctx.translate(entity.x - cameraX, entity.y);
-      ctx.scale(entity.facing, 1);
+      ctx.translate(x, y);
       
-      // Body
-      ctx.fillStyle = isPlayer ? '#4A90E2' : '#D32F2F';
-      ctx.fillRect(-entity.width/2, -entity.height/2, entity.width, entity.height);
-      ctx.strokeStyle = isPlayer ? '#2A5EAA' : '#B71C1C';
-      ctx.lineWidth = 2; ctx.strokeRect(-entity.width/2, -entity.height/2, entity.width, entity.height);
+      // Pixel perfect body matching your image
+      const bodyColor = isPlayer ? '#4169E1' : '#DC143C'; // Blue vs Red
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(-16, -16, 32, 32);
       
-      // Face
-      ctx.fillStyle = 'black';
-      ctx.fillRect(-8, -8, 4, 4);
-      ctx.fillRect(4, -8, 4, 4);
-      ctx.fillRect(-4, 2, 8, 2);
+      // Thick black outline
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(-16, -16, 32, 32);
       
-      // Hands
-      const handBob = Math.sin(time * 0.02 + (isPlayer ? 0 : Math.PI)) * 3;
-      ctx.fillStyle = isPlayer ? '#5AA0F2' : '#FF5722';
-      ctx.fillRect(-20, -2 + handBob, 8, 8);
-      ctx.fillRect(12, -2 + handBob, 8, 8);
+      // EXACT FACE from your image
+      ctx.fillStyle = '#000';
+      ctx.fillRect(-10, -8, 5, 5);  // Left eye
+      ctx.fillRect(3, -8, 5, 5);   // Right eye  
+      ctx.fillRect(-5, 3, 10, 3);  // Mouth
+      
+      // FLOATING HANDS - key feature you wanted
+      const handOffset = Math.sin(gameTime * 0.02) * 2;
+      ctx.fillStyle = isPlayer ? '#6495ED' : '#FF4500';
+      ctx.fillRect(-24, -4 + handOffset, 10, 10); // Left hand
+      ctx.fillRect(14, -4 + handOffset, 10, 10);  // Right hand
+      
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-24, -4 + handOffset, 10, 10);
+      ctx.strokeRect(14, -4 + handOffset, 10, 10);
       
       ctx.restore();
     }
     
-    // Physics update
-    function updateEntity(entity) {
-      // Ragdoll physics
-      if (entity.ragdoll > 0) {
-        entity.ragdoll--;
-        entity.vy += gravity * 1.5;
-        entity.vx *= 0.95;
-        entity.y += entity.vy;
-        entity.x += entity.vx;
-        entity.onGround = false;
-        if (entity.y > 500 - entity.height) {
-          entity.y = 500 - entity.height;
-          entity.vy *= -0.3;
-          entity.ragdoll--;
-        }
-        return;
-      }
+    // HP bar above head
+    function drawHPBar(entity, x, y, isPlayer) {
+      const width = 36, height = 6;
+      x -= 18; y -= 30;
       
-      // Normal physics
-      entity.vy += gravity;
-      entity.y += entity.vy;
-      entity.x += entity.vx;
-      entity.vx *= friction;
+      // Background
+      ctx.fillStyle = '#222';
+      ctx.fillRect(x, y, width, height);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, width, height);
       
-      if (entity.y > 500 - entity.height) {
-        entity.y = 500 - entity.height;
-        entity.vy = 0;
-        entity.onGround = true;
-      } else entity.onGround = false;
+      // HP fill
+      const hpPercent = entity.hp / entity.maxHp;
+      ctx.fillStyle = hpPercent > 0.5 ? '#4CAF50' : hpPercent > 0.25 ? '#FF9800' : '#F44336';
+      ctx.fillRect(x + 1, y + 1, width * hpPercent - 2, height - 2);
     }
     
-    // Collision check
-    function rectCollide(a, b) {
+    // Collision detection
+    function rectsCollide(a, b) {
       return a.x < b.x + b.width && a.x + a.width > b.x &&
              a.y < b.y + b.height && a.y + a.height > b.y;
     }
     
     // Respawn dummy
     function respawnDummy() {
-      dummy.x = 350; dummy.y = 400; dummy.vx = 0; dummy.vy = 0;
-      dummy.hp = 100; dummy.ragdoll = 0; dummy.facing = -1;
+      dummy.x = 400; dummy.y = 430; dummy.vx = 0; dummy.vy = 0;
+      dummy.hp = 100; dummy.ragdoll = 0;
+      block.active = true;
     }
     
-    // Update game
-    function update() {
-      time++;
-      
-      // Player input
-      let moveInput = 0;
-      if (keys['a']) { moveInput = -1; player.facing = -1; }
-      if (keys['d']) { moveInput = 1; player.facing = 1; }
-      player.vx = moveInput * moveSpeed;
-      
-      if (keys[' '] && player.onGround) {
-        player.vy = jumpPower; player.onGround = false;
+    // Update physics
+    function updateEntity(entity, isPlayer = false) {
+      if (entity.ragdoll > 0) {
+        entity.ragdoll--;
+        entity.vy += gravity * 1.8;
+        entity.vx *= 0.96;
+        entity.y += entity.vy * 0.8;
+        entity.x += entity.vx;
+        
+        if (entity.y > 500) {
+          entity.y = 500;
+          entity.vy *= -0.4;
+          entity.ragdoll--;
+        }
+        return;
       }
       
-      // Dash
-      if (keys['q']) {
+      entity.vy += gravity;
+      entity.y += entity.vy;
+      entity.x += entity.vx;
+      entity.vx *= 0.85;
+      
+      if (entity.y > 500 - entity.height) {
+        entity.y = 500 - entity.height;
+        entity.vy = 0;
+        entity.onGround = true;
+      } else {
+        entity.onGround = false;
+      }
+    }
+    
+    // Main update loop
+    function update() {
+      gameTime++;
+      
+      // Player movement - ONLY player responds to input
+      if (keys['a'] || keys['arrowleft']) {
+        player.vx = -moveSpeed;
+        player.facing = -1;
+      }
+      if (keys['d'] || keys['arrowright']) {
+        player.vx = moveSpeed;
+        player.facing = 1;
+      }
+      
+      if (keys[' '] && player.onGround && !inputState['space-prev']) {
+        player.vy = jumpPower;
+        player.onGround = false;
+      }
+      inputState['space-prev'] = keys[' '];
+      
+      // Dash (stops double-tapping)
+      if (keys['q'] && !inputState['q-prev']) {
         let dashDir = player.facing;
         if (keys['a']) dashDir = -1;
         if (keys['d']) dashDir = 1;
         player.vx = dashDir * dashPower;
-        player.vy -= 4;
-        keys['q'] = false;
+        player.vy -= 6;
       }
+      inputState['q-prev'] = keys['q'];
       
-      // M1 (3 dmg, 0.85s cooldown)
-      if (keys['z'] && player.m1Cooldown <= 0 && !keys['z-prev']) {
-        player.m1Cooldown = 51; // ~0.85s @60fps
-        const hitbox = {x: player.x + player.facing * 20, y: player.y - 10, width: 50, height: 40};
+      // M1 combo system (3 dmg each)
+      if (keys['z'] && player.m1Cooldown <= 0 && !inputState['z-prev']) {
+        player.m1Cooldown = 51; // 0.85s cooldown
         
-        // Block collision
-        if (rectCollide(hitbox, block)) {
+        // M1 hitbox
+        const hitbox = {
+          x: player.x + (player.facing * 25), y: player.y - 12,
+          width: 55, height: 44
+        };
+        
+        // Block stops M1
+        if (rectsCollide(hitbox, block) && block.active) {
           block.active = false;
-          setTimeout(() => block.active = true, 500);
+          setTimeout(() => block.active = true, 300);
+          player.m1Cooldown = 20; // Shorter on block
           return;
         }
         
-        // Dummy collision
-        if (rectCollide(hitbox, dummy) && dummy.ragdoll === 0) {
+        // Hit dummy
+        if (rectsCollide(hitbox, dummy) && dummy.ragdoll === 0) {
           dummy.hp -= 3;
-          dummy.vx += player.facing * 8;
+          dummy.vx += player.facing * 10;
+          
           player.m1Combo = (player.m1Combo + 1) % 4;
           
-          // 4th M1 ragdolls
+          // 4th M1 = RAGDOLL + knockback
           if (player.m1Combo === 0) {
             dummy.ragdoll = 90;
-            dummy.vx += player.facing * 12;
+            dummy.vx += player.facing * 15;
           }
-          // Jump M1 downslam (3rd)
-          else if (player.m1Combo === 2 && player.vy < -2) {
+          // 3rd M1 jump downslam
+          else if (player.m1Combo === 2 && player.vy < -3) {
             dummy.ragdoll = 120;
-            dummy.vy = -15;
+            dummy.vy = -18;
           }
         }
       }
-      if (keys['z']) keys['z-prev'] = true; else keys['z-prev'] = false;
+      inputState['z-prev'] = keys['z'];
       player.m1Cooldown = Math.max(0, player.m1Cooldown - 1);
       
-      // Special 1: Windup punch (24.5 dmg, unblockable)
-      if (keys['1'] && !keys['1-prev']) {
-        keys['1-prev'] = true;
-        // 0.4s windup then punch
-        setTimeout(() => {
-          const punchHitbox = {x: player.x + player.facing * 30, y: player.y - 5, width: 60, height: 30};
-          if (rectCollide(punchHitbox, dummy) && dummy.ragdoll === 0) {
+      // Special 1: 0.4s windup punch (24.5 dmg, unblockable)
+      if (keys['1'] && !inputState['1-prev'] && player.specialWindup === 0) {
+        player.specialWindup = 24; // 0.4s @60fps
+      }
+      if (player.specialWindup > 0) {
+        player.specialWindup--;
+        if (player.specialWindup === 0) {
+          // Punch hitbox (bigger, unblockable)
+          const punchBox = {
+            x: player.x + (player.facing * 35), y: player.y - 8,
+            width: 70, height: 36
+          };
+          if (rectsCollide(punchBox, dummy) && dummy.ragdoll === 0) {
             dummy.hp -= 24.5;
             dummy.ragdoll = 120;
-            dummy.vx = player.facing * 20;
-            dummy.vy = -8;
+            dummy.vx = player.facing * 25;
+            dummy.vy = -12;
           }
-        }, 400);
+        }
       }
-      if (!keys['1']) keys['1-prev'] = false;
+      inputState['1-prev'] = keys['1'];
       
-      // Update entities
-      updateEntity(player);
-      updateEntity(dummy);
+      // Update physics
+      updateEntity(player, true);
+      updateEntity(dummy, false);
       
       // Boundaries
-      player.x = Math.max(0, Math.min(800 - player.width, player.x));
-      dummy.x = Math.max(0, Math.min(800 - dummy.width, dummy.x));
+      player.x = Math.max(20, Math.min(750, player.x));
+      dummy.x = Math.max(350, Math.min(750, dummy.x));
       
-      // Dummy death/respawn
+      // Respawn
       if (dummy.hp <= 0) respawnDummy();
       
-      // Camera
+      // Camera follows player only
       cameraX = player.x - canvas.width / 2;
     }
     
-    // Render
+    // Render everything
     function render() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
       // Ground
-      ctx.fillStyle = '#8B4513'; ctx.fillRect(0, 500, canvas.width, 100);
+      ctx.fillStyle = '#8B4513';
+      ctx.fillRect(-100, 500, 1000, 100);
       
-      // Block (X)
+      // X Block
       ctx.save();
-      ctx.translate(block.x - cameraX + block.width/2, block.y + block.height/2);
-      ctx.fillStyle = block.active ? '#FF6B6B' : '#666';
-      ctx.fillRect(-block.width/2, -block.height/2, block.width, block.height);
-      ctx.fillStyle = '#000'; ctx.font = '24px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.translate(block.x - cameraX + 20, block.y + 40);
+      ctx.fillStyle = block.active ? '#FF4444' : '#666';
+      ctx.fillRect(-20, -40, 40, 80);
+      ctx.fillStyle = '#FFF';
+      ctx.font = 'bold 28px Arial';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('X', 0, 0);
       ctx.restore();
       
-      // Entities
-      drawCharacter(player, true);
-      drawHPBar(player, player.x - cameraX, player.y);
-      drawCharacter(dummy, false);
-      drawHPBar(dummy, dummy.x - cameraX, dummy.y);
+      // Draw characters
+      drawCharacter(player.x - cameraX, player.y, true, player.ragdoll);
+      drawHPBar(player, player.x - cameraX, player.y, true);
       
-      // Combo indicator
+      drawCharacter(dummy.x - cameraX, dummy.y, false, dummy.ragdoll);
+      drawHPBar(dummy, dummy.x - cameraX, dummy.y, false);
+      
+      // M1 combo indicator
       if (player.m1Cooldown > 0) {
-        ctx.fillStyle = '#FFF';
-        ctx.font = '20px Arial';
-        ctx.textAlign = 'center';
-        ctx.fillText(`M1 x${player.m1Combo + 1}`, canvas.width/2, 50);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fillRect(canvas.width/2 - 40, 40, 80, 30);
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 18px Arial';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`M1 ${player.m1Combo + 1}/4`, canvas.width/2, 55);
+      }
+      
+      // Special windup
+      if (player.specialWindup > 0) {
+        ctx.fillStyle = 'rgba(255,165,0,0.9)';
+        ctx.fillRect(canvas.width/2 - 50, 80, 100, 25);
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('PUNCH WINDUP', canvas.width/2, 92.5);
       }
     }
     
     // Game loop
-    function loop() {
-      update(); render(); requestAnimationFrame(loop);
+    function gameLoop() {
+      update();
+      render();
+      requestAnimationFrame(gameLoop);
     }
-    loop();
+    
+    gameLoop();
   </script>
 </body>
 </html>
